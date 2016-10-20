@@ -1,2 +1,8 @@
 *.sdf
 /Debug
+/Release
+/data
+DepthBasics-D2D.v11.suo
+DepthBasics-D2D.v12.suo
+DepthBasics-D2D.vcxproj.user
+opencv_world310.dll

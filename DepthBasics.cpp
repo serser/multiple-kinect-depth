@@ -8,6 +8,49 @@
 #include <strsafe.h>
 #include "resource.h"
 #include "DepthBasics.h"
+#include <iostream>
+#include <fstream>
+#include <Winsock2.h>
+#pragma comment(lib, "WS2_32") 
+#define HOST "0.0.0.0" //broadcast addr
+#define PORT 18001
+
+SOCKET sockClient;
+SOCKADDR_IN addrSrv;
+int frameCounter=0;
+using namespace std;
+
+
+void socket_init() {
+	WORD wVersionRequested;
+	WSADATA wsaData;
+	int err;
+
+	wVersionRequested = MAKEWORD(1, 1);
+	err = WSAStartup(wVersionRequested, &wsaData);
+	if (err != 0) {
+		cout << "WSA Startup Error" << endl;
+		return;
+	}
+
+	if (LOBYTE(wsaData.wVersion) != 1 || HIBYTE(wsaData.wVersion) != 1) {
+		WSACleanup();
+		cout << "WSA Data Error" << endl;
+		return;
+	}
+
+	//UDP broadcast
+	sockClient = socket(AF_INET, SOCK_DGRAM, 0);
+	addrSrv.sin_family = AF_INET;
+	addrSrv.sin_port = htons(PORT);
+	addrSrv.sin_addr.S_un.S_addr = INADDR_BROADCAST;
+
+	bool bOpt = true;
+	setsockopt(sockClient, SOL_SOCKET, SO_BROADCAST, (char*)&bOpt, sizeof(bOpt));
+
+	cout << "Socket Binded to " << HOST << endl;
+}
+
 
 /// <summary>
 /// Entry point for the application
@@ -26,7 +69,10 @@ int APIENTRY wWinMain(
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
-
+	socket_init();
+    char *buf = new char[4];
+    buf="on"; //signal for other kinect devices to start tracking
+    sendto(sockClient, buf, 4, 0, (SOCKADDR*)&addrSrv, sizeof(SOCKADDR));
     CDepthBasics application;
     application.Run(hInstance, nShowCmd);
 }
@@ -354,6 +400,27 @@ HRESULT CDepthBasics::InitializeDefaultSensor()
     return hr;
 }
 
+void CDepthBasics::WriteMatToFile(cv::Mat& m, const char* filename)
+{
+    ofstream fout(filename);
+
+    if(!fout)
+    {
+        cout<<"File Not Opened"<<endl;  return;
+    }
+
+    for(int i=0; i<m.rows; i++)
+    {
+        for(int j=0; j<m.cols; j++)
+        {
+            fout<<m.at<float>(i,j)<<"\t";
+        }
+        fout<<endl;
+    }
+
+    fout.close();
+}
+
 /// <summary>
 /// Handle new depth data
 /// <param name="nTime">timestamp of frame</param>
@@ -395,6 +462,18 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
             m_nLastCounter = qpcNow.QuadPart;
             m_nFramesSinceUpdate = 0;
         }
+
+		//writing to file
+		/*
+		cv::Mat DepthFrame(nHeight, nWidth, CV_16UC1, const_cast<unsigned short *>(pBuffer));
+		cv::Mat DepthFrame32FC1(nHeight, nWidth, CV_32FC1);
+		DepthFrame.convertTo(DepthFrame32FC1, CV_32FC1, 1.0 / (double)nMaxDepth);
+		//cv::imshow("DepthFrame", DepthFrame32FC1);
+		
+		WriteMatToFile(DepthFrame32FC1, filename);
+		*/
+		
+
     }
 
     // Make sure we've received valid data
@@ -404,6 +483,9 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
 
         // end pixel is start + width*height - 1
         const UINT16* pBufferEnd = pBuffer + (nWidth * nHeight);
+		char filename[50];
+		sprintf(filename, "data/%d.bin", ++frameCounter);
+		std::ofstream o1(filename, std::ofstream::binary);		o1.write((const char *)pBuffer, (nWidth * nHeight)*sizeof(ushort));		o1.close();
 
         while (pBuffer < pBufferEnd)
         {
@@ -421,10 +503,11 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
             pRGBX->rgbRed   = intensity;
             pRGBX->rgbGreen = intensity;
             pRGBX->rgbBlue  = intensity;
-
+			
             ++pRGBX;
             ++pBuffer;
         }
+
 
         // Draw the data with Direct2D
         m_pDrawDepth->Draw(reinterpret_cast<BYTE*>(m_pDepthRGBX), cDepthWidth * cDepthHeight * sizeof(RGBQUAD));

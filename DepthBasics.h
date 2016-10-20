@@ -8,6 +8,7 @@
 
 #include "resource.h"
 #include "ImageRenderer.h"
+#include <opencv2/opencv.hpp>
 
 class CDepthBasics
 {
@@ -122,5 +123,6 @@ private:
     /// <param name="lpszFilePath">full file path to output bitmap to</param>
     /// <returns>indicates success or failure</returns>
     HRESULT                 SaveBitmapToFile(BYTE* pBitmapBits, LONG lWidth, LONG lHeight, WORD wBitsPerPixel, LPCWSTR lpszFilePath);
+	void					WriteMatToFile(cv::Mat& m, const char* filename);
 };
 
