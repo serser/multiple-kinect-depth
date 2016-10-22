@@ -10,47 +10,9 @@
 #include "DepthBasics.h"
 #include <iostream>
 #include <fstream>
-#include <Winsock2.h>
-#pragma comment(lib, "WS2_32") 
-#define HOST "0.0.0.0" //broadcast addr
-#define PORT 18001
 
-SOCKET sockClient;
-SOCKADDR_IN addrSrv;
 int frameCounter=0;
 using namespace std;
-
-
-void socket_init() {
-	WORD wVersionRequested;
-	WSADATA wsaData;
-	int err;
-
-	wVersionRequested = MAKEWORD(1, 1);
-	err = WSAStartup(wVersionRequested, &wsaData);
-	if (err != 0) {
-		cout << "WSA Startup Error" << endl;
-		return;
-	}
-
-	if (LOBYTE(wsaData.wVersion) != 1 || HIBYTE(wsaData.wVersion) != 1) {
-		WSACleanup();
-		cout << "WSA Data Error" << endl;
-		return;
-	}
-
-	//UDP broadcast
-	sockClient = socket(AF_INET, SOCK_DGRAM, 0);
-	addrSrv.sin_family = AF_INET;
-	addrSrv.sin_port = htons(PORT);
-	addrSrv.sin_addr.S_un.S_addr = INADDR_BROADCAST;
-
-	bool bOpt = true;
-	setsockopt(sockClient, SOL_SOCKET, SO_BROADCAST, (char*)&bOpt, sizeof(bOpt));
-
-	cout << "Socket Binded to " << HOST << endl;
-}
-
 
 /// <summary>
 /// Entry point for the application
@@ -69,10 +31,7 @@ int APIENTRY wWinMain(
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
-	socket_init();
-    char *buf = new char[4];
-    buf="on"; //signal for other kinect devices to start tracking
-    sendto(sockClient, buf, 4, 0, (SOCKADDR*)&addrSrv, sizeof(SOCKADDR));
+
     CDepthBasics application;
     application.Run(hInstance, nShowCmd);
 }
@@ -92,7 +51,11 @@ CDepthBasics::CDepthBasics() :
     m_pDepthFrameReader(NULL),
     m_pD2DFactory(NULL),
     m_pDrawDepth(NULL),
-    m_pDepthRGBX(NULL)
+    m_pDepthRGBX(NULL),
+	m_bStartSync(false),
+	m_bWriteDepthFile(false),
+	m_sThread(nullptr),
+	m_sthreadId(0)
 {
     LARGE_INTEGER qpf = {0};
     if (QueryPerformanceFrequency(&qpf))
@@ -173,11 +136,16 @@ int CDepthBasics::Run(HINSTANCE hInstance, int nCmdShow)
     // Show window
     ShowWindow(hWndApp, nCmdShow);
 
+	// start listening
+	StartThreadFunc();
+	//std::thread thread1(mythreadtask);
+	//socket_init();
+	//ReadSocket();
     // Main message loop
     while (WM_QUIT != msg.message)
     {
         Update();
-
+		
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
         {
             // If a dialog message will be taken care of by the dialog proc
@@ -194,6 +162,134 @@ int CDepthBasics::Run(HINSTANCE hInstance, int nCmdShow)
     return static_cast<int>(msg.wParam);
 }
 
+void CDepthBasics::socket_init_client() {
+	WORD wVersionRequested;
+	WSADATA wsaData;
+	int err;
+	wchar_t buffer[40];
+
+	wVersionRequested = MAKEWORD(1, 1);
+	err = WSAStartup(wVersionRequested, &wsaData);
+	if (err != NO_ERROR) {
+		OutputDebugString(L"Client: WSA Startup Error");
+		cout << "WSA Startup Error" << endl;
+		return;
+	}
+
+	//UDP broadcast
+	sockClient = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sockClient == INVALID_SOCKET) {
+		wsprintf(buffer, L"client socket failed with error %d\n", WSAGetLastError());
+		OutputDebugString(L"WSA Startup Error");
+		return;
+	}
+
+	addrClient.sin_family = AF_INET;
+	addrClient.sin_port = htons(PORT);
+	addrClient.sin_addr.s_addr = htonl(INADDR_ANY); //inet_addr("192.168.0.199") 
+
+	// bind to any address and certain port
+	//note the scope restriction otherwise being considered as std::bind, 
+	// see http://stackoverflow.com/questions/6551492/how-to-distinguish-between-bind-in-sys-sockets-h-and-stdbind
+	::bind(sockClient, (SOCKADDR *)& addrClient, sizeof(addrClient));
+
+	wsprintf(buffer, L"Client Socket: %d, %d\n", sockClient, WSAGetLastError());
+	OutputDebugString(buffer);
+
+	//cout << "Socket Binded to " << HOST << endl;
+	/**/
+	wchar_t* message = new wchar_t[50];
+	u_long nMode = 1; // 1: NON-BLOCKING	int e = ioctlsocket(sockClient, FIONBIO, &nMode);	if (e == SOCKET_ERROR)	{		OutputDebugString(L"ioctlsocket  SOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERROR ");	}
+	
+	SetStatusMessage(L"initialzed socket client", 1000, true);
+}
+
+void CDepthBasics::socket_init_server(){
+	WORD wVersionRequested;
+	WSADATA wsaData;
+	int err;
+	wchar_t buffer[40];
+
+	wVersionRequested = MAKEWORD(1, 1);
+	err = WSAStartup(wVersionRequested, &wsaData);
+	if (err != NO_ERROR) {
+		OutputDebugString(L"Server: WSA Startup Error");
+		cout << "WSA Startup Error" << endl;
+		return;
+	}
+
+	//UDP broadcast
+	sockSrv = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sockSrv == INVALID_SOCKET) {
+		wsprintf(buffer, L"Server: socket failed with error %d\n", WSAGetLastError());
+		OutputDebugString(L"WSA Startup Error");
+		return;
+	}
+
+	addrServer.sin_family = AF_INET;
+	addrServer.sin_port = htons(PORT);
+	addrServer.sin_addr.s_addr = INADDR_BROADCAST;
+
+	bool bOpt = true;
+	setsockopt(sockSrv, SOL_SOCKET, SO_BROADCAST, (char*)&bOpt, sizeof(bOpt));
+	wsprintf(buffer, L"Server Socket: %d %d\n", sockSrv, WSAGetLastError());
+	OutputDebugString(buffer);
+
+	SetStatusMessage(L"initialzed socket server", 1000, true);
+}
+
+void CDepthBasics::send_signal(char* signal){
+	int length = sizeof(signal);
+	wchar_t buffer[50];
+	wchar_t buf_w[SOCK_BUF_LEN];
+	size_t len = strlen(signal);
+	mbstowcs_s(&len, buf_w, signal, length);
+	sendto(sockSrv, signal, length, 0, (SOCKADDR*)&addrServer, sizeof(SOCKADDR));
+	wsprintf(buffer, L"Sending %s, length: %d, error: %d", buf_w, length, WSAGetLastError());
+	SetStatusMessage(buffer, 1000, true);
+}
+
+void CDepthBasics::ReadSocket()
+{
+	// init socket
+	socket_init_client(); //listen
+	socket_init_server(); //sync sender
+	wchar_t* message = new wchar_t[50];	
+	wchar_t buf_w[30];
+	char *buf = new char[SOCK_BUF_LEN];
+	memset(buf, 0, SOCK_BUF_LEN);
+	int slen = sizeof(SOCKADDR_IN);
+	int recv_len;
+
+	while (1) {
+		// slave: listening on channel
+		if (!m_bStartSync){
+			recv_len = recvfrom(sockClient, buf, SOCK_BUF_LEN, 0, (struct sockaddr *) &addrClient, &slen);	
+			if (recv_len != SOCKET_ERROR) {
+				buf[recv_len] = '\0';
+				// switch on writing
+				if (strcmp(buf, "on") == 0) {
+					m_bWriteDepthFile = true;
+					SetDlgItemText(m_hWnd, IDC_BUTTON_SYNC, L"Stop");
+				}
+				// switch off writing
+				if (strcmp(buf, "off") == 0) {
+					m_bWriteDepthFile = false;
+					SetDlgItemText(m_hWnd, IDC_BUTTON_SYNC, L"Synchronize");
+				}
+			}
+			
+			// convert buf to wchar_t			
+			size_t length = strlen(buf);
+			mbstowcs_s(&length, buf_w, buf, length);
+			wsprintf(message, L"Socket %d, recv %d, error code: %d, buffer:%s\n", sockClient, recv_len, WSAGetLastError(), buf_w);
+			OutputDebugString(message);
+			//SetStatusMessage(message, 1000, true);
+		}
+			
+		Sleep(1000);
+	}
+}
 /// <summary>
 /// Main processing function
 /// </summary>
@@ -208,58 +304,58 @@ void CDepthBasics::Update()
 
     HRESULT hr = m_pDepthFrameReader->AcquireLatestFrame(&pDepthFrame);
 
-    if (SUCCEEDED(hr))
-    {
-        INT64 nTime = 0;
-        IFrameDescription* pFrameDescription = NULL;
-        int nWidth = 0;
-        int nHeight = 0;
-        USHORT nDepthMinReliableDistance = 0;
-        USHORT nDepthMaxDistance = 0;
-        UINT nBufferSize = 0;
-        UINT16 *pBuffer = NULL;
+	if (SUCCEEDED(hr))
+	{
+		INT64 nTime = 0;
+		IFrameDescription* pFrameDescription = NULL;
+		int nWidth = 0;
+		int nHeight = 0;
+		USHORT nDepthMinReliableDistance = 0;
+		USHORT nDepthMaxDistance = 0;
+		UINT nBufferSize = 0;
+		UINT16 *pBuffer = NULL;
 
-        hr = pDepthFrame->get_RelativeTime(&nTime);
+		hr = pDepthFrame->get_RelativeTime(&nTime);
 
-        if (SUCCEEDED(hr))
-        {
-            hr = pDepthFrame->get_FrameDescription(&pFrameDescription);
-        }
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_FrameDescription(&pFrameDescription);
+		}
 
-        if (SUCCEEDED(hr))
-        {
-            hr = pFrameDescription->get_Width(&nWidth);
-        }
+		if (SUCCEEDED(hr))
+		{
+			hr = pFrameDescription->get_Width(&nWidth);
+		}
 
-        if (SUCCEEDED(hr))
-        {
-            hr = pFrameDescription->get_Height(&nHeight);
-        }
+		if (SUCCEEDED(hr))
+		{
+			hr = pFrameDescription->get_Height(&nHeight);
+		}
 
-        if (SUCCEEDED(hr))
-        {
-            hr = pDepthFrame->get_DepthMinReliableDistance(&nDepthMinReliableDistance);
-        }
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_DepthMinReliableDistance(&nDepthMinReliableDistance);
+		}
 
-        if (SUCCEEDED(hr))
-        {
+		if (SUCCEEDED(hr))
+		{
 			// In order to see the full range of depth (including the less reliable far field depth)
 			// we are setting nDepthMaxDistance to the extreme potential depth threshold
 			nDepthMaxDistance = USHRT_MAX;
 
 			// Note:  If you wish to filter by reliable depth distance, uncomment the following line.
-            //// hr = pDepthFrame->get_DepthMaxReliableDistance(&nDepthMaxDistance);
-        }
+			//// hr = pDepthFrame->get_DepthMaxReliableDistance(&nDepthMaxDistance);
+		}
 
-        if (SUCCEEDED(hr))
-        {
-            hr = pDepthFrame->AccessUnderlyingBuffer(&nBufferSize, &pBuffer);            
-        }
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->AccessUnderlyingBuffer(&nBufferSize, &pBuffer);
+		}
 
-        if (SUCCEEDED(hr))
-        {
-            ProcessDepth(nTime, pBuffer, nWidth, nHeight, nDepthMinReliableDistance, nDepthMaxDistance);
-        }
+		if (SUCCEEDED(hr))
+		{
+			ProcessDepth(nTime, pBuffer, nWidth, nHeight, nDepthMinReliableDistance, nDepthMaxDistance);
+		}
 
         SafeRelease(pFrameDescription);
     }
@@ -351,6 +447,25 @@ LRESULT CALLBACK CDepthBasics::DlgProc(HWND hWnd, UINT message, WPARAM wParam, L
             {
                 m_bSaveScreenshot = true;
             }
+			// sync button is clicked, start sending signal and writing file
+			if (IDC_BUTTON_SYNC == LOWORD(wParam) && BN_CLICKED == HIWORD(wParam))
+			{
+				wchar_t itemText[30];
+				GetDlgItemText(hWnd, IDC_BUTTON_SYNC, itemText,30);
+				if (wcscmp(itemText, L"Synchronize") == 0){						
+					m_bStartSync = true;
+					SetDlgItemText(hWnd, IDC_BUTTON_SYNC, L"Stop");
+					m_bWriteDepthFile = true;
+					send_signal("on");
+				}
+				else{
+					m_bStartSync = false;
+					SetDlgItemText(hWnd, IDC_BUTTON_SYNC, L"Synchronize");
+					// send to peer devices to stop
+					send_signal("off");
+					m_bWriteDepthFile = false;
+				}				
+			}
             break;
     }
 
@@ -400,6 +515,7 @@ HRESULT CDepthBasics::InitializeDefaultSensor()
     return hr;
 }
 
+/*
 void CDepthBasics::WriteMatToFile(cv::Mat& m, const char* filename)
 {
     ofstream fout(filename);
@@ -419,7 +535,7 @@ void CDepthBasics::WriteMatToFile(cv::Mat& m, const char* filename)
     }
 
     fout.close();
-}
+}*/
 
 /// <summary>
 /// Handle new depth data
@@ -483,9 +599,15 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
 
         // end pixel is start + width*height - 1
         const UINT16* pBufferEnd = pBuffer + (nWidth * nHeight);
-		char filename[50];
-		sprintf(filename, "data/%d.bin", ++frameCounter);
-		std::ofstream o1(filename, std::ofstream::binary);		o1.write((const char *)pBuffer, (nWidth * nHeight)*sizeof(ushort));		o1.close();
+
+		// write to file
+		if (m_bWriteDepthFile){
+			char filename[50];
+			sprintf(filename, "data/%d.bin", ++frameCounter);
+			std::ofstream o1(filename, std::ofstream::binary);
+			o1.write((const char *)pBuffer, (nWidth * nHeight)*sizeof(ushort));
+			o1.close();
+		}
 
         while (pBuffer < pBufferEnd)
         {

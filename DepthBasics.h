@@ -9,6 +9,14 @@
 #include "resource.h"
 #include "ImageRenderer.h"
 #include <opencv2/opencv.hpp>
+#include <thread>
+#include <Winsock2.h>
+#include <Ws2tcpip.h>
+
+#pragma comment(lib, "WS2_32")
+#define HOST "192.168.0.199"
+#define PORT 18001
+#define SOCK_BUF_LEN 4
 
 class CDepthBasics
 {
@@ -61,6 +69,16 @@ private:
     INT64                   m_nNextStatusTime;
     DWORD                   m_nFramesSinceUpdate;
     bool                    m_bSaveScreenshot;
+	bool					m_bStartSync;
+	bool					m_bWriteDepthFile;
+
+    // sock thread
+	HANDLE                  m_sThread;
+	DWORD                   m_sthreadId;
+	SOCKET					sockClient;
+	SOCKADDR_IN				addrClient;
+	SOCKET					sockSrv;
+	SOCKADDR_IN				addrServer;
 
     // Current Kinect
     IKinectSensor*          m_pKinectSensor;
@@ -123,6 +141,21 @@ private:
     /// <param name="lpszFilePath">full file path to output bitmap to</param>
     /// <returns>indicates success or failure</returns>
     HRESULT                 SaveBitmapToFile(BYTE* pBitmapBits, LONG lWidth, LONG lHeight, WORD wBitsPerPixel, LPCWSTR lpszFilePath);
-	void					WriteMatToFile(cv::Mat& m, const char* filename);
+  	//void					WriteMatToFile(cv::Mat& m, const char* filename);
+	void					ReadSocket();
+	void					socket_init_client();
+	void					socket_init_server();
+	void					send_signal(char* signal);
+	static UINT ThreadFunc(LPVOID param)
+	{
+		CDepthBasics* This = (CDepthBasics*)param;
+		This->ReadSocket(); // call a member function
+		return 0;
+	}
+	VOID StartThreadFunc()
+	{
+		::CreateThread(0, 0, (LPTHREAD_START_ROUTINE)ThreadFunc,
+			(LPVOID)this, 0, 0);
+	}
 };
 
