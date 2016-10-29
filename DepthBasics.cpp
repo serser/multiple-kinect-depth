@@ -199,7 +199,12 @@ void CDepthBasics::socket_init_client() {
 	//cout << "Socket Binded to " << HOST << endl;
 	/**/
 	wchar_t* message = new wchar_t[50];
-	u_long nMode = 1; // 1: NON-BLOCKING	int e = ioctlsocket(sockClient, FIONBIO, &nMode);	if (e == SOCKET_ERROR)	{		OutputDebugString(L"ioctlsocket  SOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERROR ");	}
+	u_long nMode = 1; // 1: NON-BLOCKING
+	int e = ioctlsocket(sockClient, FIONBIO, &nMode);
+	if (e == SOCKET_ERROR)
+	{
+		OutputDebugString(L"ioctlsocket  SOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERRORSOCKET_ERROR ");
+	}
 	
 	SetStatusMessage(L"initialzed socket client", 1000, true);
 }
@@ -605,7 +610,7 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
 			char filename[50];
 			sprintf(filename, "data/%d.bin", ++frameCounter);
 			std::ofstream o1(filename, std::ofstream::binary);
-			o1.write((const char *)pBuffer, (nWidth * nHeight)*sizeof(ushort));
+			o1.write((const char *)pBuffer, (nWidth * nHeight)*sizeof(UINT16));
 			o1.close();
 		}
 

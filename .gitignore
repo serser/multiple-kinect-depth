@@ -8,3 +8,4 @@ DepthBasics-D2D.vcxproj.user
 opencv_world310.dll
 opencv_world310d.dll
 DepthBasics.aps
+*.opensdf
