@@ -71,6 +71,8 @@ private:
     bool                    m_bSaveScreenshot;
 	bool					m_bStartSync;
 	bool					m_bWriteDepthFile;
+	bool					m_bWriteRGBD;
+	bool					m_Master;
 
     // sock thread
 	HANDLE                  m_sThread;
@@ -80,16 +82,22 @@ private:
 	SOCKET					sockSrv;
 	SOCKADDR_IN				addrServer;
 
+	// caputure-frame
+	int						m_frameCounter;
+
     // Current Kinect
     IKinectSensor*          m_pKinectSensor;
 
     // Depth reader
+	IMultiSourceFrameReader*m_pMultiSourceFrameReader;
     IDepthFrameReader*      m_pDepthFrameReader;
+	IColorFrameReader*      m_pColorFrameReader;
 
     // Direct2D
     ImageRenderer*          m_pDrawDepth;
     ID2D1Factory*           m_pD2DFactory;
     RGBQUAD*                m_pDepthRGBX;
+	RGBQUAD*                m_pColorRGBX;
 
     /// <summary>
     /// Main processing function
@@ -101,6 +109,7 @@ private:
     /// </summary>
     /// <returns>S_OK on success, otherwise failure code</returns>
     HRESULT                 InitializeDefaultSensor();
+	HRESULT					InitializeMultiSourceSensor();
 
     /// <summary>
     /// Handle new depth data

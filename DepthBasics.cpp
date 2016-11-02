@@ -13,6 +13,8 @@
 
 int frameCounter=0;
 using namespace std;
+static const int        cColorWidth = 1920;
+static const int        cColorHeight = 1080;
 
 /// <summary>
 /// Entry point for the application
@@ -36,6 +38,14 @@ int APIENTRY wWinMain(
     application.Run(hInstance, nShowCmd);
 }
 
+void CreateFolder(const wchar_t * path)
+{
+	if (!CreateDirectory(path, NULL))
+	{
+		return;
+	}
+}
+
 /// <summary>
 /// Constructor
 /// </summary>
@@ -48,14 +58,19 @@ CDepthBasics::CDepthBasics() :
     m_nNextStatusTime(0LL),
     m_bSaveScreenshot(false),
     m_pKinectSensor(NULL),
-    m_pDepthFrameReader(NULL),
+	m_pMultiSourceFrameReader(NULL),
+	m_pDepthFrameReader(NULL),
+	m_pColorFrameReader(NULL),
     m_pD2DFactory(NULL),
     m_pDrawDepth(NULL),
     m_pDepthRGBX(NULL),
 	m_bStartSync(false),
 	m_bWriteDepthFile(false),
 	m_sThread(nullptr),
-	m_sthreadId(0)
+	m_sthreadId(0),
+	m_frameCounter(0),
+	m_bWriteRGBD(false),
+	m_Master(false)
 {
     LARGE_INTEGER qpf = {0};
     if (QueryPerformanceFrequency(&qpf))
@@ -65,8 +80,13 @@ CDepthBasics::CDepthBasics() :
 
     // create heap storage for depth pixel data in RGBX format
     m_pDepthRGBX = new RGBQUAD[cDepthWidth * cDepthHeight];
+	m_pColorRGBX = new RGBQUAD[cColorWidth * cColorHeight];
+
+	// prepare the data and capture folders
+	CreateFolder(L"data");
+	CreateFolder(L"capture");
 }
-  
+
 
 /// <summary>
 /// Destructor
@@ -90,7 +110,8 @@ CDepthBasics::~CDepthBasics()
     SafeRelease(m_pD2DFactory);
 
     // done with depth frame reader
-    SafeRelease(m_pDepthFrameReader);
+    //SafeRelease(m_pDepthFrameReader);
+	SafeRelease(m_pMultiSourceFrameReader);
 
     // close the Kinect Sensor
     if (m_pKinectSensor)
@@ -282,6 +303,12 @@ void CDepthBasics::ReadSocket()
 					m_bWriteDepthFile = false;
 					SetDlgItemText(m_hWnd, IDC_BUTTON_SYNC, L"Synchronize");
 				}
+				// capture only one
+				if (strcmp(buf, "cap") == 0) {
+					if (!m_Master){
+						m_bWriteRGBD=true;
+					}
+				}
 			}
 			
 			// convert buf to wchar_t			
@@ -295,17 +322,188 @@ void CDepthBasics::ReadSocket()
 		Sleep(1000);
 	}
 }
+
 /// <summary>
 /// Main processing function
 /// </summary>
 void CDepthBasics::Update()
 {
-    if (!m_pDepthFrameReader)
+	if (!m_pMultiSourceFrameReader)
     {
         return;
     }
 
-    IDepthFrame* pDepthFrame = NULL;
+	IMultiSourceFrame* pMultiSourceFrame = NULL;
+	IDepthFrame* pDepthFrame = NULL;
+	IColorFrame* pColorFrame = NULL;
+
+	HRESULT hr = m_pMultiSourceFrameReader->AcquireLatestFrame(&pMultiSourceFrame);
+
+	if (SUCCEEDED(hr))
+	{
+		IDepthFrameReference* pDepthFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_DepthFrameReference(&pDepthFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameReference->AcquireFrame(&pDepthFrame);
+		}
+
+		SafeRelease(pDepthFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		IColorFrameReference* pColorFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_ColorFrameReference(&pColorFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameReference->AcquireFrame(&pColorFrame);
+		}
+
+		SafeRelease(pColorFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		INT64 nDepthTime = 0;
+		IFrameDescription* pDepthFrameDescription = NULL;
+		int nDepthWidth = 0;
+		int nDepthHeight = 0;
+		UINT nDepthBufferSize = 0;
+		UINT16 *pDepthBuffer = NULL;
+		USHORT nDepthMinReliableDistance = 0;
+		USHORT nDepthMaxDistance = 0;
+
+		IFrameDescription* pColorFrameDescription = NULL;
+		int nColorWidth = 0;
+		int nColorHeight = 0;
+		ColorImageFormat imageFormat = ColorImageFormat_None;
+		UINT nColorBufferSize = 0;
+		RGBQUAD *pColorBuffer = NULL;
+
+		IFrameDescription* pBodyIndexFrameDescription = NULL;
+		int nBodyIndexWidth = 0;
+		int nBodyIndexHeight = 0;
+		UINT nBodyIndexBufferSize = 0;
+		BYTE *pBodyIndexBuffer = NULL;
+
+		// get depth frame data
+
+		hr = pDepthFrame->get_RelativeTime(&nDepthTime);
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_FrameDescription(&pDepthFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Width(&nDepthWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Height(&nDepthHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->AccessUnderlyingBuffer(&nDepthBufferSize, &pDepthBuffer);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_DepthMinReliableDistance(&nDepthMinReliableDistance);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			// In order to see the full range of depth (including the less reliable far field depth)
+			// we are setting nDepthMaxDistance to the extreme potential depth threshold
+			nDepthMaxDistance = USHRT_MAX;
+
+			// Note:  If you wish to filter by reliable depth distance, uncomment the following line.
+			//// hr = pDepthFrame->get_DepthMaxReliableDistance(&nDepthMaxDistance);
+		}
+
+		// get color frame data
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_FrameDescription(&pColorFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Width(&nColorWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Height(&nColorHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_RawColorImageFormat(&imageFormat);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			if (imageFormat == ColorImageFormat_Bgra)
+			{
+				hr = pColorFrame->AccessRawUnderlyingBuffer(&nColorBufferSize, reinterpret_cast<BYTE**>(&pColorBuffer));
+			}
+			else if (m_pColorRGBX)
+			{
+				pColorBuffer = m_pColorRGBX;
+				nColorBufferSize = cColorWidth * cColorHeight * sizeof(RGBQUAD);
+				hr = pColorFrame->CopyConvertedFrameDataToArray(nColorBufferSize, reinterpret_cast<BYTE*>(pColorBuffer), ColorImageFormat_Bgra);
+			}
+			else
+			{
+				hr = E_FAIL;
+			}
+		}
+
+		// get body index frame data
+		if (SUCCEEDED(hr))
+		{
+			//ProcessFrame(nDepthTime, pDepthBuffer, nDepthWidth, nDepthHeight,
+			//	pColorBuffer, nColorWidth, nColorHeight,
+			//	pBodyIndexBuffer, nBodyIndexWidth, nBodyIndexHeight);
+
+			// write the file
+			if (m_bWriteRGBD && pColorBuffer && pDepthBuffer){
+				char filename[50];
+				sprintf(filename, "capture/%d.bin", ++m_frameCounter);
+				std::ofstream fo(filename, std::ofstream::binary);
+				fo.write((const char *)pDepthBuffer, (nDepthWidth * nDepthHeight)*sizeof(UINT16));
+				fo.write((const char *)pColorBuffer, (nColorWidth * nColorHeight)*sizeof(RGBQUAD));
+				fo.close();
+				m_bWriteRGBD = false;
+				SetStatusMessage(L"Written caputered RGBD Images", 1000, true);
+			}
+
+			// process
+			ProcessDepth(nDepthTime, pDepthBuffer, nDepthWidth, nDepthHeight, nDepthMinReliableDistance, nDepthMaxDistance);
+		}
+
+		SafeRelease(pDepthFrameDescription);
+		SafeRelease(pColorFrameDescription);
+		SafeRelease(pBodyIndexFrameDescription);
+	}
+
+	SafeRelease(pDepthFrame);
+	SafeRelease(pColorFrame);
+	SafeRelease(pMultiSourceFrame);
+
+
+
+	/* Handle the depth frame
+
+    IDepthFrame* pDepthFrame = NULL;	
 
     HRESULT hr = m_pDepthFrameReader->AcquireLatestFrame(&pDepthFrame);
 
@@ -357,6 +555,11 @@ void CDepthBasics::Update()
 			hr = pDepthFrame->AccessUnderlyingBuffer(&nBufferSize, &pBuffer);
 		}
 
+
+		// save both image and depth
+		//if (0)
+
+
 		if (SUCCEEDED(hr))
 		{
 			ProcessDepth(nTime, pBuffer, nWidth, nHeight, nDepthMinReliableDistance, nDepthMaxDistance);
@@ -366,6 +569,7 @@ void CDepthBasics::Update()
     }
 
     SafeRelease(pDepthFrame);
+	*/
 }
 
 /// <summary>
@@ -431,7 +635,8 @@ LRESULT CALLBACK CDepthBasics::DlgProc(HWND hWnd, UINT message, WPARAM wParam, L
             }
 
             // Get and initialize the default Kinect sensor
-            InitializeDefaultSensor();
+            //InitializeDefaultSensor();
+			InitializeMultiSourceSensor();
         }
         break;
 
@@ -457,7 +662,7 @@ LRESULT CALLBACK CDepthBasics::DlgProc(HWND hWnd, UINT message, WPARAM wParam, L
 			{
 				wchar_t itemText[30];
 				GetDlgItemText(hWnd, IDC_BUTTON_SYNC, itemText,30);
-				if (wcscmp(itemText, L"Synchronize") == 0){						
+				if (wcscmp(itemText, L"Synchronize") == 0){
 					m_bStartSync = true;
 					SetDlgItemText(hWnd, IDC_BUTTON_SYNC, L"Stop");
 					m_bWriteDepthFile = true;
@@ -470,6 +675,14 @@ LRESULT CALLBACK CDepthBasics::DlgProc(HWND hWnd, UINT message, WPARAM wParam, L
 					send_signal("off");
 					m_bWriteDepthFile = false;
 				}				
+			}
+			// capture button is pressed
+			if (IDC_BUTTON_CAPTURE == LOWORD(wParam) && BN_CLICKED == HIWORD(wParam))
+			{				
+				m_Master = true;
+				m_bWriteRGBD = true;
+				send_signal("cap");
+				OutputDebugString(L"Setting writeRGBD\n");
 			}
             break;
     }
@@ -497,7 +710,7 @@ HRESULT CDepthBasics::InitializeDefaultSensor()
         IDepthFrameSource* pDepthFrameSource = NULL;
 
         hr = m_pKinectSensor->Open();
-
+		// depth frame reader
         if (SUCCEEDED(hr))
         {
             hr = m_pKinectSensor->get_DepthFrameSource(&pDepthFrameSource);
@@ -508,7 +721,21 @@ HRESULT CDepthBasics::InitializeDefaultSensor()
             hr = pDepthFrameSource->OpenReader(&m_pDepthFrameReader);
         }
 
-        SafeRelease(pDepthFrameSource);
+		SafeRelease(pDepthFrameSource);
+
+		/* color frame reader
+		IColorFrameSource* pColorFrameSource = NULL;
+		if (SUCCEEDED(hr))
+		{
+			hr = m_pKinectSensor->get_ColorFrameSource(&pColorFrameSource);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameSource->OpenReader(&m_pColorFrameReader);
+		}		
+		SafeRelease(pColorFrameSource);
+		*/
     }
 
     if (!m_pKinectSensor || FAILED(hr))
@@ -518,6 +745,38 @@ HRESULT CDepthBasics::InitializeDefaultSensor()
     }
 
     return hr;
+}
+
+HRESULT CDepthBasics::InitializeMultiSourceSensor(){
+	HRESULT hr;
+
+	hr = GetDefaultKinectSensor(&m_pKinectSensor);
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+	
+	if (m_pKinectSensor)
+	{
+		// Initialize the Kinect and get the frame reader
+
+		hr = m_pKinectSensor->Open();
+
+		if (SUCCEEDED(hr))
+		{
+			hr = m_pKinectSensor->OpenMultiSourceFrameReader(
+				FrameSourceTypes::FrameSourceTypes_Depth | FrameSourceTypes::FrameSourceTypes_Color | FrameSourceTypes::FrameSourceTypes_BodyIndex,
+				&m_pMultiSourceFrameReader);
+		}
+	}
+
+	if (!m_pKinectSensor || FAILED(hr))
+	{
+		SetStatusMessage(L"No ready Kinect found!", 10000, true);
+		return E_FAIL;
+	}
+
+	return hr;
 }
 
 /*
@@ -593,8 +852,6 @@ void CDepthBasics::ProcessDepth(INT64 nTime, const UINT16* pBuffer, int nWidth, 
 		
 		WriteMatToFile(DepthFrame32FC1, filename);
 		*/
-		
-
     }
 
     // Make sure we've received valid data

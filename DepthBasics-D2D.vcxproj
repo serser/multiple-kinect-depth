@@ -24,6 +24,7 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="app.ico" />
+    <Image Include="icon1.ico" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DepthBasics.rc" />
